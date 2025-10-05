@@ -1,0 +1,17 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ecommerce-services
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  selector:
+    matchLabels: {}
+  namespaceSelector:
+    matchNames:
+    - ecommerce
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /metrics

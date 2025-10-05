@@ -1,0 +1,22 @@
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ecommerce-platform
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/goti13/E-Commerce-Platform-with-Microservices-Architecture.git
+    targetRevision: main
+    path: kubernetes/manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ecommerce
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+    - CreateNamespace=true
+

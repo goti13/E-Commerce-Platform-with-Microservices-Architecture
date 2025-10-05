@@ -29,6 +29,11 @@ def get_product(product_id):
 def health_check():
     return jsonify({"status": "healthy", "service": "product-service"})
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5003, debug=True)
+@app.route('/metrics', methods=['GET'])
+def metrics():
+    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
 
+if __name__ == '__main__':
+    # Set products listed gauge
+    PRODUCTS_LISTED.set(len(products))
+    app.run(host='0.0.0.0', port=5003, debug=True)
