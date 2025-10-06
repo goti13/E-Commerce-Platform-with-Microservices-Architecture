@@ -727,6 +727,24 @@ spec:
 
 ```
 
+**Apply All Manifests**
+
+```bash
+
+kubectl apply -f kubernetes/manifests/
+
+```
+
+Verify everything is running
+
+
+```bash
+
+Verify everything is running
+
+```
+
+
 # Phase 4: ArgoCD Setup
 
 **Step 10: Install ArgoCD**
@@ -892,15 +910,18 @@ kubectl get all -n kong
 
 Kong Ingress (api-gateway/kong-ingress.yaml):
 
-```
+```yaml
+
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: ecommerce-ingress
   namespace: ecommerce
   annotations:
-    kubernetes.io/ingress.class: kong
+    # Kong-specific annotations (keep these)
+    konghq.com/strip-path: "false"
 spec:
+  ingressClassName: kong  # Add this instead of the deprecated annotation
   rules:
   - http:
       paths:
@@ -969,21 +990,49 @@ kubectl get svc -n kong
 ```
 
 Test services through Kong
-First, get the Kong proxy URL
+
+method 1:
 
 ```bash
 
-minikube service -n kong kong-kong-proxy --url
+# Get minikube IP
+MINIKUBE_IP=$(minikube ip)
+
+# Get the NodePort for Kong (port 80 maps to a NodePort)
+KONG_PORT=$(kubectl get svc -n kong kong-kong-proxy -o jsonpath='{.spec.ports[0].nodePort}')
+
+# Set the Kong URL
+KONG_URL="http://$MINIKUBE_IP:$KONG_PORT"
+
+echo "Kong URL: $KONG_URL"
 
 ```
 
+or method 2:
 
-Use the URL to test (replace KONG_URL with actual URL)
+```
 
+# Forward Kong proxy to local port 8000
+kubectl port-forward -n kong svc/kong-kong-proxy 8000:80 &
+
+# Now use this URL
+KONG_URL="http://localhost:8000"
+echo "Kong URL: $KONG_URL"
+
+# Test it
+curl $KONG_URL
+
+```
+
+or method 3:
 
 ```bash
 
-KONG_URL=$(minikube service -n kong kong-kong-proxy --url)
+# Get just the URL without opening browser
+minikube service -n kong kong-kong-proxy --url --format "{{.IP}}:{{.Port}}"
+
+# Or get the full URL
+minikube service -n kong kong-kong-proxy --url | head -n1
 
 ```
 
@@ -1039,8 +1088,286 @@ helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring
 
 ```
 
+Add Prometheus metrics to your Flask apps. Update each service:
 
-<img width="2418" height="1572" alt="image" src="https://github.com/user-attachments/assets/8d41e4b7-eae0-4009-bc90-1d5e4d0fec58" />
+1. Update requirements.txt for each service:
+
+```text
+
+Flask==2.3.3
+prometheus-client==0.20.0
+
+```
+
+2. Update each app.py to include metrics:
+
+Product Service (product-service/src/app.py):
+
+
+```python
+
+from flask import Flask, jsonify
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter, Gauge
+import os
+
+app = Flask(__name__)
+
+# Prometheus metrics
+PRODUCT_REQUESTS = Counter('product_requests_total', 'Total product API requests')
+PRODUCTS_LISTED = Gauge('products_listed', 'Number of products available')
+
+# Sample product data
+products = [
+    {"id": 1, "name": "Laptop", "price": 999.99, "category": "Electronics", "stock": 15},
+    {"id": 2, "name": "Smartphone", "price": 699.99, "category": "Electronics", "stock": 30}
+]
+
+@app.route('/products', methods=['GET'])
+def get_products():
+    PRODUCT_REQUESTS.inc()
+    PRODUCTS_LISTED.set(len(products))
+    return jsonify({
+        "products": products,
+        "count": len(products)
+    })
+
+@app.route('/products/<int:product_id>', methods=['GET'])
+def get_product(product_id):
+    PRODUCT_REQUESTS.inc()
+    product = next((p for p in products if p['id'] == product_id), None)
+    if product:
+        return jsonify(product)
+    return jsonify({"error": "Product not found"}), 404
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy", "service": "product-service"})
+
+@app.route('/metrics', methods=['GET'])
+def metrics():
+    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
+
+if __name__ == '__main__':
+    # Set products listed gauge
+    PRODUCTS_LISTED.set(len(products))
+    app.run(host='0.0.0.0', port=5003, debug=True)
+
+```
+
+cart Service (cart-service/src/app.py):
+
+```python
+
+
+    if user_id not in carts:
+        carts[user_id] = {"user_id": user_id, "items": [], "t
+otal": 0}
+
+    # Check if item already in cart
+    existing_item = next((item for item in carts[user_id]['it
+ems'] if item['product_id'] == product_id), None)
+
+    if existing_item:
+        existing_item['quantity'] += quantity
+    else:
+        carts[user_id]['items'].append({
+            "product_id": product_id,
+            "quantity": quantity
+        })
+
+    # Update total (simplified - in real app, fetch product p
+rice)
+    carts[user_id]['total'] = sum(item['quantity'] * 100 for 
+item in carts[user_id]['items'])
+
+    return jsonify({"message": "Item added to cart", "cart": 
+carts[user_id]})
+
+@app.route('/cart/<user_id>/remove/<product_id>', methods=['D
+ELETE'])
+def remove_from_cart(user_id, product_id):
+    if user_id in carts:
+        carts[user_id]['items'] = [item for item in carts[user_id]['items'] if item['product_id'] != int(product_id)]
+        carts[user_id]['total'] = sum(item['quantity'] * 100 for item in carts[user_id]['items'])
+
+    return jsonify({"message": "Item removed from cart", "cart": carts.get(user_id, {"user_id": user_id, "items": [], "total": 0})})
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy", "service": "cart-service"})
+
+@app.route('/metrics', methods=['GET'])
+def metrics():
+    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5001, debug=True)
+
+
+```
+
+order Service (order-service/src/app.py):
+
+
+```python
+
+from flask import Flask, jsonify, request
+from datetime import datetime
+
+app = Flask(__name__)
+
+orders = []
+order_id_counter = 1
+
+@app.route('/orders', methods=['POST'])
+def create_order():
+    global order_id_counter
+    data = request.json
+
+    order = {
+        "id": order_id_counter,
+        "user_id": data['user_id'],
+        "items": data['items'],
+        "total": data['total'],
+        "status": "confirmed",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat()
+    }
+
+    orders.append(order)
+    order_id_counter += 1
+
+    return jsonify({"message": "Order created successfully", "order": order})
+
+@app.route('/orders/<user_id>', methods=['GET'])
+def get_user_orders(user_id):
+    user_orders = [order for order in orders if order['user_id'] == user_id]
+    return jsonify({
+        "orders": user_orders,
+        "count": len(user_orders)
+    })
+
+@app.route('/orders/<int:order_id>', methods=['GET'])
+def get_order(order_id):
+    order = next((o for o in orders if o['id'] == order_id), None)
+    if order:
+        return jsonify(order)
+    return jsonify({"error": "Order not found"}), 404
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy", "service": "order-service"})
+
+"order-service/src/app.py" 54L, 1502B
+
+```
+
+3. Update the ServiceMonitor to use /metrics endpoint:
+
+Create your monitoring/service-monitor.yaml:
+
+```yaml
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ecommerce-services
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  selector:
+    matchLabels: {}
+  namespaceSelector:
+    matchNames:
+    - ecommerce
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /metrics
+
+```
+
+Apply the configuration:
+
+```bash
+
+kubectl apply -f monitoring/service-monitor.yaml
+
+```
+
+
+
+<img width="2186" height="1502" alt="image" src="https://github.com/user-attachments/assets/f6aaeb40-ffd1-4d38-8cc2-70cd5b271800" />
+
+
+<img width="2200" height="1482" alt="image" src="https://github.com/user-attachments/assets/788e6c96-49f3-4d4b-b7ba-0d7b3ad3206f" />
+
+<img width="2218" height="1578" alt="image" src="https://github.com/user-attachments/assets/5ed0f5c6-e3d7-42dd-b17a-098f2504c1a4" />
+
+
+<img width="2180" height="1484" alt="image" src="https://github.com/user-attachments/assets/68f6ad48-236e-44ed-b3a9-0599cdb51eda" />
+
+
+<img width="2198" height="1516" alt="image" src="https://github.com/user-attachments/assets/db1bbd19-8937-451e-93ce-578c9d07ae3b" />
+
+
+<img width="2200" height="1512" alt="image" src="https://github.com/user-attachments/assets/de3278c2-86ec-4628-a11b-28a8b5e7f218" />
+
+
+<img width="2196" height="1504" alt="image" src="https://github.com/user-attachments/assets/b339f099-aa3e-4350-bf3e-1eb064649cbd" />
+
+
+<img width="2202" height="1496" alt="image" src="https://github.com/user-attachments/assets/5c27d874-6ec0-4013-b74d-8d8a8eddf953" />
+
+
+<img width="2204" height="1514" alt="image" src="https://github.com/user-attachments/assets/e9445b32-66e5-49d7-99f3-0f4d7392132e" />
+
+
+<img width="1098" height="771" alt="image" src="https://github.com/user-attachments/assets/ea65b86b-82ca-41ea-9cce-83b792049154" />
+
+
+
+
+<img width="2864" height="1542" alt="image" src="https://github.com/user-attachments/assets/95a88415-998b-4a83-867a-5795ed69e76b" />
+
+
+<img width="1406" height="1076" alt="image" src="https://github.com/user-attachments/assets/c2c99fcf-570f-4748-b0f9-6f01570fe65d" />
+
+
+<img width="2536" height="1546" alt="image" src="https://github.com/user-attachments/assets/b95d4785-c558-4a96-a4d0-a11df627cf3c" />
+
+
+<img width="1630" height="1506" alt="image" src="https://github.com/user-attachments/assets/8101a019-bab6-47a5-869d-b6e2d8f04960" />
+
+
+<img width="1678" height="1314" alt="image" src="https://github.com/user-attachments/assets/442e50f3-5bde-4a03-bc0a-e1d6ed612b8b" />
+
+
+<img width="1662" height="1374" alt="image" src="https://github.com/user-attachments/assets/ed8f22cf-7df1-46c6-ac5f-c2df0d110015" />
+
+
+<img width="2660" height="1496" alt="image" src="https://github.com/user-attachments/assets/510d0833-0c22-4334-89c4-039cfc6b078e" />
+
+<img width="2870" height="1612" alt="image" src="https://github.com/user-attachments/assets/2b2b9177-0d1b-4250-806d-86bd028a4d36" />
+
+
+<img width="1916" height="676" alt="image" src="https://github.com/user-attachments/assets/ab815bfb-13de-48df-b69c-00b076bf6a7b" />
+
+
+<img width="2866" height="1548" alt="image" src="https://github.com/user-attachments/assets/35d44791-5b00-46ac-a4c5-00bd1df5a39d" />
+
+
+<img width="2852" height="1582" alt="image" src="https://github.com/user-attachments/assets/eda95813-06f8-40ae-b46d-9fd6b1c03ad5" />
+
+
+
+
+
+
+
+
+
 
 
 
